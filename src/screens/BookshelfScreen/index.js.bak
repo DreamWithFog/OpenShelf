@@ -1,0 +1,708 @@
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, FlatList, TouchableOpacity, RefreshControl, Alert, BackHandler } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import * as Haptics from 'expo-haptics';
+import { Feather } from '@expo/vector-icons';
+
+import { useAppContext } from '../../context/AppContext';
+import { useBooks } from '../../hooks';
+import { GRID_VIEWS, ITEM_HEIGHTS } from '../../constants';
+import { logger } from '../../../logger';
+import { 
+  EmptyState, 
+  BookSkeleton,
+  BookPreviewModal
+} from '../../components';
+import { 
+  BookItem,
+  FloatingActionButton,
+  CardStackView,
+  BookSpotlight,
+  MultiBookSpotlight
+} from '../../components/book';
+import { globalStyles } from '../../styles/globalStyles';
+import { 
+  bulkUpdateBooks, 
+  bulkDeleteBooks, 
+  getAllBooks 
+} from '../../../database';
+
+import { useBookshelfFilters, useBookshelfDisplay } from './hooks';
+import { SearchBar, SeriesHeader, Header, FilterModal, BulkActionsModal } from './components';
+import { renderSeriesItem, getItemLayout } from './utils/renderHelpers';
+
+let savedFilters = null;
+
+const BookshelfScreen = ({ navigation, route }) => {
+  const { theme, gridView, activeSession, db, prepareUndo } = useAppContext();
+  const seriesFilter = route?.params?.seriesName || null;
+  const newBookId = route?.params?.newBookId || null;
+  const newBookIds = route?.params?.newBookIds || null;
+
+  const insets = useSafeAreaInsets();
+
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedBooks, setSelectedBooks] = useState([]);
+  const [showBulkActions, setShowBulkActions] = useState(false);
+
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [previewBook, setPreviewBook] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+  
+  const [spotlightBook, setSpotlightBook] = useState(null);
+  const [showSpotlight, setShowSpotlight] = useState(false);
+  const [spotlightBooks, setSpotlightBooks] = useState([]);
+  const [showMultiSpotlight, setShowMultiSpotlight] = useState(false);
+
+  const { allBooks, isLoading, isRefreshing, fetchBooks } = useBooks('all');
+
+  const {
+    activeFilter,
+    searchQuery,
+    setSearchQuery,
+    selectedTagFilters,
+    setSelectedTagFilters,
+    filteredBooks,
+    allTags,
+    activeFiltersCount,
+    handleFilterChange,
+    handleClearFilters
+  } = useBookshelfFilters(allBooks, seriesFilter, savedFilters);
+
+  const { displayItems } = useBookshelfDisplay(
+    filteredBooks, 
+    activeFilter, 
+    seriesFilter
+  );
+
+  const selectableItems = isSelectionMode 
+    ? displayItems.filter(item => !item.isSeries)
+    : displayItems;
+
+  const currentGridView = isSelectionMode ? GRID_VIEWS.COMPACT : gridView;
+
+  // Handle hardware back button
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (isSelectionMode) {
+        setIsSelectionMode(false);
+        setSelectedBooks([]);
+        return true;
+      }
+      return false;
+    });
+
+    return () => backHandler.remove();
+  }, [isSelectionMode]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchBooks();
+    }, [fetchBooks])
+  );
+
+  const toggleSelectionMode = useCallback(() => {
+    if (isSelectionMode) {
+      setSelectedBooks([]);
+      setIsSelectionMode(false);
+    } else {
+      setIsSelectionMode(true);
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, [isSelectionMode]);
+
+  const toggleBookSelection = useCallback((book) => {
+    if (book.isSeries) return;
+    
+    setSelectedBooks(prev => {
+      const isSelected = prev.some(b => b.id === book.id);
+      if (isSelected) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        return prev.filter(b => b.id !== book.id);
+      } else {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        return [...prev, book];
+      }
+    });
+  }, []);
+
+  const handleBulkAction = useCallback(async (action, value) => {
+    if (!db || selectedBooks.length === 0) return;
+
+    const bookIds = selectedBooks.map(b => b.id);
+    const bookCount = selectedBooks.length;
+    const bookText = bookCount === 1 ? '1 book' : `${bookCount} books`;
+
+    try {
+      switch(action) {
+        case 'delete': {
+          const booksToDelete = [...selectedBooks];
+          
+          await bulkDeleteBooks(db, bookIds);
+          
+          prepareUndo(
+            'books_deleted',
+            booksToDelete,
+            `Deleted ${bookText}`,
+            async () => {
+              for (const book of booksToDelete) {
+                await db.runAsync(`
+                  INSERT INTO books (
+                    title, author, coverUrl, coverPath, status, rating,
+                    totalPages, currentPage, bookUrl, isbn, tags,
+                    format, publisher, publicationYear, language, originalLanguage,
+                    seriesName, seriesOrder, volumeNumber, totalVolumes,
+                    totalChapters, currentChapter, trackingType,
+                    collectionType, seriesCoverUrl, totalInSeries
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                  book.title, book.author, book.coverUrl, book.coverPath, 
+                  book.status, book.rating, book.totalPages, book.currentPage,
+                  book.bookUrl, book.isbn, JSON.stringify(book.tags || []),
+                  book.format, book.publisher, book.publicationYear, 
+                  book.language, book.originalLanguage, book.seriesName,
+                  book.seriesOrder, book.volumeNumber, book.totalVolumes,
+                  book.totalChapters, book.currentChapter, book.trackingType,
+                  book.collectionType, book.seriesCoverUrl, book.totalInSeries
+                ]);
+              }
+              fetchBooks();
+            }
+          );
+          break;
+        }
+
+        case 'status': {
+          const previousStatuses = selectedBooks.map(book => ({ id: book.id, status: book.status }));
+          await bulkUpdateBooks(db, bookIds, { status: value });
+          prepareUndo(
+            'status_changed',
+            previousStatuses,
+            `Changed status of ${bookText} to "${value}"`,
+            async () => {
+              for (const { id, status } of previousStatuses) {
+                await db.runAsync(
+                  'UPDATE books SET status = ? WHERE id = ?',
+                  [status, id]
+                );
+              }
+              fetchBooks();
+            }
+          );
+          break;
+        }
+
+        case 'addTags': {
+          const previousTags = [];
+          for (const bookId of bookIds) {
+            const book = selectedBooks.find(b => b.id === bookId);
+            const currentTags = book.tags || [];
+            previousTags.push({ id: bookId, tags: currentTags });
+            if (!currentTags.includes(value)) {
+              const newTags = [...currentTags, value];
+              await db.runAsync(
+                'UPDATE books SET tags = ? WHERE id = ?',
+                [JSON.stringify(newTags), bookId]
+              );
+            }
+          }
+          prepareUndo(
+            'tags_added',
+            previousTags,
+            `Added tag "${value}" to ${bookText}`,
+            async () => {
+              for (const { id, tags } of previousTags) {
+                await db.runAsync(
+                  'UPDATE books SET tags = ? WHERE id = ?',
+                  [JSON.stringify(tags), id]
+                );
+              }
+              fetchBooks();
+            }
+          );
+          break;
+        }
+
+        case 'removeTags': {
+          const previousTags = [];
+          for (const bookId of bookIds) {
+            const book = selectedBooks.find(b => b.id === bookId);
+            const currentTags = book.tags || [];
+            previousTags.push({ id: bookId, tags: currentTags });
+            const newTags = currentTags.filter(t => t !== value);
+            await db.runAsync(
+              'UPDATE books SET tags = ? WHERE id = ?',
+              [JSON.stringify(newTags), bookId]
+            );
+          }
+          prepareUndo(
+            'tags_removed',
+            previousTags,
+            `Removed tag "${value}" from ${bookText}`,
+            async () => {
+              for (const { id, tags } of previousTags) {
+                await db.runAsync(
+                  'UPDATE books SET tags = ? WHERE id = ?',
+                  [JSON.stringify(tags), id]
+                );
+              }
+              fetchBooks();
+            }
+          );
+          break;
+        }
+
+        case 'series': {
+          await bulkUpdateBooks(db, bookIds, { seriesName: value, collectionType: 'series' });
+          break;
+        }
+
+        case 'format': {
+          await bulkUpdateBooks(db, bookIds, { format: value });
+          break;
+        }
+
+        case 'language': {
+          await bulkUpdateBooks(db, bookIds, { language: value });
+          break;
+        }
+
+        case 'rating': {
+          await bulkUpdateBooks(db, bookIds, { rating: parseInt(value) });
+          break;
+        }
+
+        case 'trackingType': {
+          await bulkUpdateBooks(db, bookIds, { trackingType: value });
+          break;
+        }
+      }
+
+      await fetchBooks();
+      setSelectedBooks([]);
+      setIsSelectionMode(false);
+      
+    } catch (error) {
+      logger.error('Bulk action failed:', error);
+      Alert.alert('Error', 'Failed to perform bulk action');
+    }
+  }, [db, selectedBooks, fetchBooks, prepareUndo]);
+
+  useEffect(() => {
+    savedFilters = {
+      activeFilter,
+      searchQuery,
+      selectedTagFilters: [...selectedTagFilters],
+    };
+  }, [activeFilter, searchQuery, selectedTagFilters]);
+
+  useEffect(() => {
+    if (newBookId && allBooks.length > 0 && !isLoading && !showSpotlight) {
+      const newBook = allBooks.find(book => book.id === newBookId);
+      
+      if (newBook) {
+        setSpotlightBook(newBook);
+        setShowSpotlight(true);
+        navigation.setParams({ newBookId: null });
+      }
+    }
+  }, [newBookId, allBooks, isLoading, showSpotlight, navigation]);
+
+  useEffect(() => {
+    if (newBookIds && Array.isArray(newBookIds) && newBookIds.length > 0 && allBooks.length > 0 && !isLoading && !showMultiSpotlight) {
+      const newBooks = allBooks.filter(book => newBookIds.includes(book.id));
+      
+      if (newBooks.length > 0) {
+        setSpotlightBooks(newBooks);
+        setShowMultiSpotlight(true);
+        navigation.setParams({ newBookIds: null });
+      }
+    }
+  }, [newBookIds, allBooks, isLoading, showMultiSpotlight, navigation]);
+
+  const handleSpotlightComplete = useCallback(() => {
+    setShowSpotlight(false);
+    setTimeout(() => setSpotlightBook(null), 300);
+  }, []);
+
+  const handleMultiSpotlightComplete = useCallback(() => {
+    setShowMultiSpotlight(false);
+    setTimeout(() => setSpotlightBooks([]), 300);
+  }, []);
+
+  const handleRefresh = useCallback(() => {
+    fetchBooks(true);
+  }, [fetchBooks]);
+
+  const handleBookPress = useCallback((book) => {
+    if (book.isSeries) {
+      if (!isSelectionMode) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        navigation.push('My Bookshelf', { seriesName: book.seriesName });
+      }
+      return;
+    }
+
+    if (isSelectionMode) {
+      toggleBookSelection(book);
+    } else {
+      navigation.navigate('BookDetail', { bookId: book.id });
+    }
+  }, [isSelectionMode, toggleBookSelection, navigation]);
+
+  const handleBookLongPress = useCallback((book) => {
+    if (book.isSeries) return;
+    
+    if (!isSelectionMode) {
+      setIsSelectionMode(true);
+      setSelectedBooks([book]);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  }, [isSelectionMode]);
+
+  const handleBackFromSeries = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const renderBookItem = useCallback(({ item }) => {
+    if (item.isSeries) {
+      return renderSeriesItem(item, currentGridView, theme, handleBookPress, GRID_VIEWS, ITEM_HEIGHTS);
+    }
+
+    const isSelected = selectedBooks.some(b => b.id === item.id);
+
+    const viewMode = currentGridView === GRID_VIEWS.COMPACT ? 'compact' :
+                     currentGridView === GRID_VIEWS.DETAILED ? 'list' :
+                     'grid';
+
+    return (
+      <View style={{ position: 'relative' }}>
+        <BookItem 
+          book={item}
+          theme={theme}
+          viewMode={viewMode}
+          onPress={() => handleBookPress(item)}
+        />
+        
+        {isSelectionMode && (
+          <View style={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            width: 24,
+            height: 24,
+            borderRadius: 12,
+            backgroundColor: isSelected ? theme.primary : 'rgba(255,255,255,0.9)',
+            borderWidth: 2,
+            borderColor: isSelected ? theme.primary : theme.border,
+            justifyContent: 'center',
+            alignItems: 'center',
+            elevation: 3,
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.2,
+            shadowRadius: 2,
+          }}>
+            {isSelected && (
+              <Feather name="check" size={16} color="#fff" />
+            )}
+          </View>
+        )}
+        
+        {isSelected && (
+          <View style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(255,255,255,0.3)',
+            borderRadius: 8,
+            pointerEvents: 'none',
+          }} />
+        )}
+      </View>
+    );
+  }, [currentGridView, navigation, activeFilter, theme, handleBookPress, handleBookLongPress, isSelectionMode, selectedBooks]);
+
+  const renderSkeleton = useCallback(() => (
+    <BookSkeleton theme={theme} gridView={currentGridView} />
+  ), [theme, currentGridView]);
+
+  const getItemLayoutCallback = useCallback((data, index) => 
+    getItemLayout(data, index, ITEM_HEIGHTS, currentGridView),
+  [currentGridView]);
+
+  const keyExtractor = useCallback((item) => 
+    item.isSeries ? item.id : `book-${item.id}`, 
+  []);
+
+  return (
+    <SafeAreaView 
+      style={[globalStyles.container, { backgroundColor: theme.background }]}
+      accessible={true}
+      accessibilityLabel="Bookshelf screen"
+    >
+      {!seriesFilter && (
+        <Header
+          navigation={navigation}
+          theme={theme}
+          activeFiltersCount={activeFiltersCount}
+          onShowFilterModal={() => setShowFilterModal(true)}
+          isSelectionMode={isSelectionMode}
+          onToggleSelectionMode={toggleSelectionMode}
+          selectedCount={selectedBooks.length}
+        />
+      )}
+
+      {seriesFilter && (
+        <SeriesHeader 
+          seriesName={seriesFilter} 
+          bookCount={displayItems.length}
+          onBack={handleBackFromSeries}
+          theme={theme}
+        />
+      )}
+
+      <FilterModal
+        visible={showFilterModal}
+        activeFilter={activeFilter}
+        selectedTagFilters={selectedTagFilters}
+        allTags={allTags}
+        onFilterChange={handleFilterChange}
+        onTagFilterChange={setSelectedTagFilters}
+        onClearFilters={handleClearFilters}
+        onClose={() => setShowFilterModal(false)}
+        theme={theme}
+      />
+
+      <BulkActionsModal
+        visible={showBulkActions}
+        selectedBooks={selectedBooks}
+        onClose={() => setShowBulkActions(false)}
+        onBulkAction={handleBulkAction}
+        theme={theme}
+        allTags={allTags}
+      />
+
+      <View style={{ paddingHorizontal: 16 }}>
+        <SearchBar
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onClearSearch={() => setSearchQuery('')}
+          theme={theme}
+          books={allBooks}  // Add this line
+        />
+      </View>
+
+      {isSelectionMode && selectedBooks.length > 0 && (
+        <View style={{
+          flexDirection: 'row',
+          paddingHorizontal: 16,
+          paddingVertical: 8,
+          gap: 8,
+        }}>
+          <TouchableOpacity
+            style={{
+              flex: 1,
+              backgroundColor: theme.primary,
+              borderRadius: 8,
+              padding: 12,
+              alignItems: 'center',
+            }}
+            onPress={() => {
+              setShowBulkActions(true);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Text style={{ color: '#fff', fontWeight: 'bold' }}>
+              Actions ({selectedBooks.length})
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={{
+              backgroundColor: theme.cardBackground,
+              borderRadius: 8,
+              padding: 12,
+              paddingHorizontal: 16,
+              borderWidth: 1,
+              borderColor: theme.border,
+            }}
+            onPress={() => {
+              const allDisplayBooks = selectableItems.filter(item => !item.isSeries);
+              const allSelected = allDisplayBooks.length > 0 && allDisplayBooks.every(book => 
+                selectedBooks.some(b => b.id === book.id)
+              );
+              
+              if (allSelected) {
+                setSelectedBooks([]);
+              } else {
+                setSelectedBooks(allDisplayBooks);
+              }
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <Text style={{ color: theme.text, fontWeight: '600' }}>
+              {selectableItems.filter(item => !item.isSeries).every(book => 
+                selectedBooks.some(b => b.id === book.id)
+              ) && selectableItems.length > 0 ? 'Deselect All' : 'Select All'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {activeSession && gridView !== GRID_VIEWS.STACK && !isSelectionMode && (
+        <TouchableOpacity
+          style={{
+            backgroundColor: theme.primary,
+            marginHorizontal: 16,
+            marginVertical: 8,
+            borderRadius: 12,
+            padding: 16,
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.2,
+            shadowRadius: 4,
+            elevation: 4,
+          }}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            navigation.navigate('BookDetail', { bookId: activeSession.bookId });
+          }}
+        >
+          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Feather name="book-open" size={24} color="#fff" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '600', opacity: 0.9 }}>
+                READING NOW
+              </Text>
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold', marginTop: 4 }} numberOfLines={1}>
+                {activeSession.bookTitle}
+              </Text>
+              <Text style={{ color: '#fff', fontSize: 12, opacity: 0.8, marginTop: 2 }}>
+                Tap to return to session
+              </Text>
+            </View>
+          </View>
+          <View style={{
+            backgroundColor: 'rgba(255,255,255,0.2)',
+            borderRadius: 20,
+            paddingHorizontal: 12,
+            paddingVertical: 6,
+          }}>
+            <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+              GO →
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
+
+      <View style={[globalStyles.gridContainer, { flex: 1 }]}>
+        {currentGridView === GRID_VIEWS.STACK ? (
+          isLoading && !isRefreshing ? (
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ color: theme.textSecondary }}>Loading cards...</Text>
+            </View>
+          ) : (
+            <CardStackView 
+              books={selectableItems}
+              navigation={navigation} 
+              theme={theme}
+              onSeriesPress={handleBookPress}
+              onBookLongPress={handleBookLongPress}
+              onBookPress={handleBookPress}
+              isSelectionMode={isSelectionMode}
+            />
+          )
+        ) : (
+          isLoading && !isRefreshing ? (
+            <FlatList
+              data={Array(6).fill({})}
+              renderItem={renderSkeleton}
+              keyExtractor={(_, index) => `skeleton-${index}`}
+              numColumns={
+                currentGridView === GRID_VIEWS.DETAILED ? 1 : 
+                currentGridView === GRID_VIEWS.COMPACT ? 3 : 2
+              }
+              key={`skeleton-${currentGridView}`}
+              accessible={false}
+            />
+          ) : selectableItems.length === 0 ? (
+            <EmptyState
+              title={searchQuery ? "No books found" : seriesFilter ? "No books in this series" : isSelectionMode ? "No books to select" : "Your library is empty"}
+              message={searchQuery ? "Try adjusting your search terms" : seriesFilter ? "" : isSelectionMode ? "Only standalone books can be selected" : "Add your first book to get started!"}
+              theme={theme}
+            />
+          ) : (
+            <FlatList
+              data={selectableItems}
+              renderItem={renderBookItem}
+              keyExtractor={keyExtractor}
+              numColumns={
+                currentGridView === GRID_VIEWS.DETAILED ? 1 : 
+                currentGridView === GRID_VIEWS.COMPACT ? 3 : 2
+              }
+              key={`books-${currentGridView}-${isSelectionMode ? 'select' : 'normal'}`}
+              getItemLayout={getItemLayoutCallback}
+              refreshControl={
+                <RefreshControl
+                  refreshing={isRefreshing}
+                  onRefresh={handleRefresh}
+                  colors={[theme.primary]}
+                  tintColor={theme.primary}
+                />
+              }
+              contentContainerStyle={{
+                paddingBottom: insets.bottom + 100,
+              }}
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={true}
+              maxToRenderPerBatch={8}
+              updateCellsBatchingPeriod={50}
+              initialNumToRender={15}
+              windowSize={5}
+              legacyImplementation={false}
+              scrollEventThrottle={16}
+              persistentScrollbar={false}
+              maintainVisibleContentPosition={null}
+            />
+          )
+        )}
+      </View>
+      
+      {!isSelectionMode && (
+        <FloatingActionButton
+          onPress={() => navigation.navigate('AddBook')}
+          theme={theme}
+          insets={insets}
+        />
+      )}
+
+      <BookPreviewModal
+        visible={showPreview}
+        book={previewBook}
+        onClose={() => setShowPreview(false)}
+        theme={theme}
+      />
+
+      <BookSpotlight
+        visible={showSpotlight}
+        book={spotlightBook}
+        onComplete={handleSpotlightComplete}
+        theme={theme}
+      />
+
+      <MultiBookSpotlight
+        visible={showMultiSpotlight}
+        books={spotlightBooks}
+        onComplete={handleMultiSpotlightComplete}
+        theme={theme}
+      />
+    </SafeAreaView>
+  );
+};
+
+export default BookshelfScreen;

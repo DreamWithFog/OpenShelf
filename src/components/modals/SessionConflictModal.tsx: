@@ -1,0 +1,191 @@
+import React from 'react';
+import { View, Text, Modal, TouchableOpacity, StyleSheet } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { Theme } from '../../context/AppContext';
+
+interface SessionConflictModalProps {
+  visible: boolean;
+  onClose: () => void;
+  currentBookTitle: string;
+  onViewCurrent: () => void;
+  onEndAndStart: () => void;
+  theme: Theme;
+}
+
+const SessionConflictModal: React.FC<SessionConflictModalProps> = ({
+  visible,
+  onClose,
+  currentBookTitle,
+  onViewCurrent,
+  onEndAndStart,
+  theme
+}) => {
+  const handleViewCurrent = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onClose();
+    onViewCurrent();
+  };
+
+  const handleEndAndStart = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    onClose();
+    onEndAndStart();
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent={true}
+    >
+      <TouchableOpacity
+        style={styles.overlay}
+        activeOpacity={1}
+        onPress={onClose}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={(e) => e.stopPropagation()}
+          style={[styles.modalContent, { backgroundColor: theme.cardBackground }]}
+        >
+          {/* Warning Icon */}
+          <View style={[styles.iconContainer, { backgroundColor: `${theme.warning}20` }]}>
+            <MaterialIcons name="warning" size={48} color={theme.warning} />
+          </View>
+
+          {/* Title */}
+          <Text style={[styles.title, { color: theme.text }]}>
+            Session in Progress
+          </Text>
+
+          {/* Message */}
+          <Text style={[styles.message, { color: theme.textSecondary }]}>
+            You're currently reading:
+          </Text>
+          <Text style={[styles.bookTitle, { color: theme.primary }]}>
+            "{currentBookTitle}"
+          </Text>
+          <Text style={[styles.message, { color: theme.textSecondary, marginTop: 12 }]}>
+            What would you like to do?
+          </Text>
+
+          {/* Actions */}
+          <View style={styles.actions}>
+            {/* View Current Session */}
+            <TouchableOpacity
+              style={[styles.actionButton, { backgroundColor: theme.primary }]}
+              onPress={handleViewCurrent}
+            >
+              <MaterialIcons name="visibility" size={20} color="#fff" />
+              <Text style={styles.actionButtonText}>View Current Session</Text>
+            </TouchableOpacity>
+
+            {/* End & Start New */}
+            <TouchableOpacity
+              style={[styles.actionButton, { 
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderColor: theme.danger
+              }]}
+              onPress={handleEndAndStart}
+            >
+              <MaterialIcons name="stop" size={20} color={theme.danger} />
+              <Text style={[styles.actionButtonText, { color: theme.danger }]}>
+                End & Start New
+              </Text>
+            </TouchableOpacity>
+
+            {/* Cancel */}
+            <TouchableOpacity
+              style={[styles.cancelButton, { backgroundColor: theme.border }]}
+              onPress={onClose}
+            >
+              <Text style={[styles.cancelButtonText, { color: theme.text }]}>
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+};
+
+const styles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '85%',
+    maxWidth: 400,
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  iconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  message: {
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  bookTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  actions: {
+    width: '100%',
+    marginTop: 24,
+    gap: 12,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+  actionButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  cancelButton: {
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  cancelButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+});
+
+export default SessionConflictModal;

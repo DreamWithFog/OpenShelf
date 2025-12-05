@@ -1,0 +1,35 @@
+// Books table schema
+export const createBooksTable = `
+  CREATE TABLE IF NOT EXISTS books (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    author TEXT,
+    coverUrl TEXT,
+    coverPath TEXT,
+    status TEXT DEFAULT 'Unfinished',
+    rating INTEGER DEFAULT 0,
+    totalPages INTEGER DEFAULT 0,
+    currentPage INTEGER DEFAULT 0,
+    bookUrl TEXT,
+    tags TEXT,
+    isbn TEXT,
+    format TEXT DEFAULT 'Physical',
+    publisher TEXT,
+    publicationYear TEXT,
+    language TEXT DEFAULT 'English',
+    originalLanguage TEXT,
+    seriesName TEXT,
+    seriesOrder REAL,
+    volumeNumber INTEGER,
+    totalVolumes INTEGER,
+    totalChapters INTEGER,
+    currentChapter INTEGER DEFAULT 0,
+    trackingType TEXT DEFAULT 'pages',
+    collectionType TEXT,
+    seriesCoverUrl TEXT,
+    totalInSeries INTEGER,
+    readCount INTEGER DEFAULT 0,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`;
